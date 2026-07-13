@@ -3,16 +3,20 @@
 @interface UsageDashboardView : NSView
 @property NSArray<NSDictionary *> *rows;
 @property NSDate *updatedAt;
-- (instancetype)initWithRows:(NSArray<NSDictionary *> *)rows updatedAt:(NSDate *)updatedAt;
+@property NSNumber *resetCredits;
+@property NSDate *resetCreditsExpiry;
+- (instancetype)initWithRows:(NSArray<NSDictionary *> *)rows updatedAt:(NSDate *)updatedAt resetCredits:(NSNumber *)resetCredits resetCreditsExpiry:(NSDate *)resetCreditsExpiry;
 @end
 
 @implementation UsageDashboardView
 
-- (instancetype)initWithRows:(NSArray<NSDictionary *> *)rows updatedAt:(NSDate *)updatedAt {
-    CGFloat height = 42 + MAX(1, rows.count) * 57 + 10;
+- (instancetype)initWithRows:(NSArray<NSDictionary *> *)rows updatedAt:(NSDate *)updatedAt resetCredits:(NSNumber *)resetCredits resetCreditsExpiry:(NSDate *)resetCreditsExpiry {
+    CGFloat height = 42 + MAX(1, rows.count) * 57 + (resetCredits ? 49 : 10);
     if (self = [super initWithFrame:NSMakeRect(0, 0, 308, height)]) {
         _rows = rows;
         _updatedAt = updatedAt;
+        _resetCredits = resetCredits;
+        _resetCreditsExpiry = resetCreditsExpiry;
     }
     return self;
 }
@@ -87,6 +91,20 @@
                     color:NSColor.secondaryLabelColor alignment:NSTextAlignmentLeft];
         y += 57;
     }
+    if (self.resetCredits) {
+        [[NSColor.separatorColor colorWithAlphaComponent:0.55] setStroke];
+        [NSBezierPath strokeLineFromPoint:NSMakePoint(card.origin.x + 16, y - 2) toPoint:NSMakePoint(NSMaxX(card) - 16, y - 2)];
+        [self drawText:@"限额重置卡" in:NSMakeRect(card.origin.x + 16, y + 7, 130, 17)
+                     font:[NSFont systemFontOfSize:11.5 weight:NSFontWeightMedium]
+                    color:NSColor.labelColor alignment:NSTextAlignmentLeft];
+        [self drawText:[NSString stringWithFormat:@"%@ 张", self.resetCredits] in:NSMakeRect(NSMaxX(card) - 64, y + 2, 48, 22)
+                     font:[NSFont monospacedDigitSystemFontOfSize:17 weight:NSFontWeightSemibold]
+                    color:NSColor.systemBlueColor alignment:NSTextAlignmentRight];
+        NSString *expiry = self.resetCreditsExpiry ? [self resetCardExpiryText:self.resetCreditsExpiry] : @"到期日未由官方接口返回";
+        [self drawText:expiry in:NSMakeRect(card.origin.x + 16, y + 26, card.size.width - 32, 14)
+                     font:[NSFont systemFontOfSize:10.5 weight:NSFontWeightRegular]
+                    color:NSColor.secondaryLabelColor alignment:NSTextAlignmentLeft];
+    }
 }
 
 - (NSString *)resetTextForWindow:(NSDictionary *)window {
@@ -96,6 +114,14 @@
     if (days) return [NSString stringWithFormat:@"%ld天%ld小时后重置", (long)days, (long)hours];
     if (hours) return [NSString stringWithFormat:@"%ld小时%ld分后重置", (long)hours, (long)minutes];
     return seconds ? [NSString stringWithFormat:@"%ld分钟后重置", (long)MAX(1, minutes)] : @"即将重置";
+}
+
+- (NSString *)resetCardExpiryText:(NSDate *)date {
+    NSInteger seconds = MAX(0, (NSInteger)[date timeIntervalSinceNow]);
+    NSInteger days = seconds / 86400, hours = (seconds % 86400) / 3600;
+    if (seconds == 0) return @"已到期";
+    if (days) return [NSString stringWithFormat:@"%ld天%ld小时后到期", (long)days, (long)hours];
+    return [NSString stringWithFormat:@"%ld小时后到期", (long)MAX(1, hours)];
 }
 @end
 
@@ -241,6 +267,15 @@
     return rows;
 }
 
+- (NSDate *)resetCreditsExpiry {
+    NSDictionary *credits = [self.usage[@"rate_limit_reset_credits"] isKindOfClass:NSDictionary.class] ? self.usage[@"rate_limit_reset_credits"] : nil;
+    for (NSString *key in @[@"expires_at", @"expiration_at", @"expiresAt", @"expirationAt"]) {
+        NSNumber *timestamp = [credits[key] respondsToSelector:@selector(doubleValue)] ? credits[key] : nil;
+        if (timestamp.doubleValue > 0) return [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
+    }
+    return nil;
+}
+
 - (void)rebuildMenu {
     NSMenu *menu = [NSMenu new];
     [self addDisabled:@"Codex 用量余额" to:menu];
@@ -248,7 +283,9 @@
     NSDictionary *limit = [self.usage[@"rate_limit"] isKindOfClass:NSDictionary.class] ? self.usage[@"rate_limit"] : nil;
     NSArray *mainWindows = [self windowsForLimit:limit ?: @{}];
     if (mainWindows.count) {
-        UsageDashboardView *dashboard = [[UsageDashboardView alloc] initWithRows:[self dashboardRows] updatedAt:self.usage[@"_fetchedAt"]];
+        NSDictionary *resetCreditInfo = [self.usage[@"rate_limit_reset_credits"] isKindOfClass:NSDictionary.class] ? self.usage[@"rate_limit_reset_credits"] : nil;
+        NSNumber *resetCredits = [resetCreditInfo[@"available_count"] respondsToSelector:@selector(integerValue)] ? resetCreditInfo[@"available_count"] : nil;
+        UsageDashboardView *dashboard = [[UsageDashboardView alloc] initWithRows:[self dashboardRows] updatedAt:self.usage[@"_fetchedAt"] resetCredits:resetCredits resetCreditsExpiry:[self resetCreditsExpiry]];
         NSMenuItem *dashboardItem = [NSMenuItem new];
         dashboardItem.view = dashboard;
         [menu addItem:dashboardItem];
@@ -257,8 +294,6 @@
         [self addDisabled:[NSString stringWithFormat:@"套餐：%@", [plan.lowercaseString isEqualToString:@"prolite"] ? @"Pro" : plan] to:menu];
         NSDictionary *credits = [self.usage[@"credits"] isKindOfClass:NSDictionary.class] ? self.usage[@"credits"] : nil;
         if (credits) [self addDisabled:[NSString stringWithFormat:@"额外点数：%@", [credits[@"has_credits"] boolValue] ? (credits[@"balance"] ?: @"可用") : @"未启用"] to:menu];
-        NSNumber *resetTickets = [self.usage[@"rate_limit_reset_credits"] isKindOfClass:NSDictionary.class] ? self.usage[@"rate_limit_reset_credits"][@"available_count"] : nil;
-        if (resetTickets) [self addDisabled:[NSString stringWithFormat:@"限额重置券：%@", resetTickets] to:menu];
         NSDateFormatter *formatter = [NSDateFormatter new]; formatter.dateFormat = @"HH:mm";
         [self addDisabled:[NSString stringWithFormat:@"实时数据 · 更新于 %@", [formatter stringFromDate:self.usage[@"_fetchedAt"] ?: NSDate.date]] to:menu];
     } else {

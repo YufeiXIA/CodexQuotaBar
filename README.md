@@ -2,8 +2,10 @@
 
 A native macOS menu-bar dashboard for the usage limits of the Codex account
 signed in on the current Mac. It displays the remaining percentage, an adaptive
-bar chart, the reset countdown, plan, extra credits, and any additional
-model-specific limits.
+bar chart, the reset countdown, plan, extra credits, reset-card count, and any
+additional model-specific limits. If the official response includes a reset-card
+expiry, the dashboard also shows its countdown; otherwise it explicitly marks
+the expiry as unavailable rather than guessing.
 
 ![macOS 13+](https://img.shields.io/badge/macOS-13%2B-000000?logo=apple)
 ![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)
