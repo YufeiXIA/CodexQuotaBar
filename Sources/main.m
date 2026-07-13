@@ -144,7 +144,10 @@
 
 - (NSDate *)dateForCredit:(NSDictionary *)credit {
     NSString *rawDate = [credit[@"expires_at"] isKindOfClass:NSString.class] ? credit[@"expires_at"] : nil;
-    return rawDate ? [[NSISO8601DateFormatter new] dateFromString:rawDate] : nil;
+    if (!rawDate) return nil;
+    NSISO8601DateFormatter *formatter = [NSISO8601DateFormatter new];
+    formatter.formatOptions = NSISO8601DateFormatWithInternetDateTime | NSISO8601DateFormatWithFractionalSeconds;
+    return [formatter dateFromString:rawDate];
 }
 @end
 
