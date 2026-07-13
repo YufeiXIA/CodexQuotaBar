@@ -4,19 +4,20 @@
 @property NSArray<NSDictionary *> *rows;
 @property NSDate *updatedAt;
 @property NSNumber *resetCredits;
-@property NSDate *resetCreditsExpiry;
-- (instancetype)initWithRows:(NSArray<NSDictionary *> *)rows updatedAt:(NSDate *)updatedAt resetCredits:(NSNumber *)resetCredits resetCreditsExpiry:(NSDate *)resetCreditsExpiry;
+@property NSArray<NSDictionary *> *resetCreditDetails;
+- (instancetype)initWithRows:(NSArray<NSDictionary *> *)rows updatedAt:(NSDate *)updatedAt resetCredits:(NSNumber *)resetCredits resetCreditDetails:(NSArray<NSDictionary *> *)resetCreditDetails;
 @end
 
 @implementation UsageDashboardView
 
-- (instancetype)initWithRows:(NSArray<NSDictionary *> *)rows updatedAt:(NSDate *)updatedAt resetCredits:(NSNumber *)resetCredits resetCreditsExpiry:(NSDate *)resetCreditsExpiry {
-    CGFloat height = 42 + MAX(1, rows.count) * 57 + (resetCredits ? 49 : 10);
+- (instancetype)initWithRows:(NSArray<NSDictionary *> *)rows updatedAt:(NSDate *)updatedAt resetCredits:(NSNumber *)resetCredits resetCreditDetails:(NSArray<NSDictionary *> *)resetCreditDetails {
+    CGFloat resetHeight = resetCredits ? (resetCreditDetails ? 33 + resetCreditDetails.count * 21 : 49) : 10;
+    CGFloat height = 42 + MAX(1, rows.count) * 57 + resetHeight;
     if (self = [super initWithFrame:NSMakeRect(0, 0, 308, height)]) {
         _rows = rows;
         _updatedAt = updatedAt;
         _resetCredits = resetCredits;
-        _resetCreditsExpiry = resetCreditsExpiry;
+        _resetCreditDetails = resetCreditDetails;
     }
     return self;
 }
@@ -100,10 +101,23 @@
         [self drawText:[NSString stringWithFormat:@"%@ 张", self.resetCredits] in:NSMakeRect(NSMaxX(card) - 64, y + 2, 48, 22)
                      font:[NSFont monospacedDigitSystemFontOfSize:17 weight:NSFontWeightSemibold]
                     color:NSColor.systemBlueColor alignment:NSTextAlignmentRight];
-        NSString *expiry = self.resetCreditsExpiry ? [self resetCardExpiryText:self.resetCreditsExpiry] : @"到期日未由官方接口返回";
-        [self drawText:expiry in:NSMakeRect(card.origin.x + 16, y + 26, card.size.width - 32, 14)
-                     font:[NSFont systemFontOfSize:10.5 weight:NSFontWeightRegular]
-                    color:NSColor.secondaryLabelColor alignment:NSTextAlignmentLeft];
+        if (!self.resetCreditDetails) {
+            [self drawText:@"正在读取每张卡的到期日…" in:NSMakeRect(card.origin.x + 16, y + 26, card.size.width - 32, 14)
+                         font:[NSFont systemFontOfSize:10.5 weight:NSFontWeightRegular]
+                        color:NSColor.secondaryLabelColor alignment:NSTextAlignmentLeft];
+        } else {
+            CGFloat creditY = y + 27;
+            NSUInteger number = 1;
+            for (NSDictionary *credit in self.resetCreditDetails) {
+                [self drawText:[NSString stringWithFormat:@"卡 %lu", (unsigned long)number++] in:NSMakeRect(card.origin.x + 16, creditY, 38, 14)
+                             font:[NSFont systemFontOfSize:10.5 weight:NSFontWeightMedium]
+                            color:NSColor.secondaryLabelColor alignment:NSTextAlignmentLeft];
+                [self drawText:[self resetCardExpiryText:[self dateForCredit:credit]] in:NSMakeRect(card.origin.x + 55, creditY, card.size.width - 71, 14)
+                             font:[NSFont systemFontOfSize:10.5 weight:NSFontWeightRegular]
+                            color:NSColor.secondaryLabelColor alignment:NSTextAlignmentRight];
+                creditY += 21;
+            }
+        }
     }
 }
 
@@ -117,11 +131,20 @@
 }
 
 - (NSString *)resetCardExpiryText:(NSDate *)date {
+    if (!date) return @"到期日未知";
     NSInteger seconds = MAX(0, (NSInteger)[date timeIntervalSinceNow]);
     NSInteger days = seconds / 86400, hours = (seconds % 86400) / 3600;
     if (seconds == 0) return @"已到期";
-    if (days) return [NSString stringWithFormat:@"%ld天%ld小时后到期", (long)days, (long)hours];
-    return [NSString stringWithFormat:@"%ld小时后到期", (long)MAX(1, hours)];
+    NSDateFormatter *formatter = [NSDateFormatter new];
+    formatter.dateFormat = @"M月d日 HH:mm";
+    NSString *dateText = [formatter stringFromDate:date];
+    if (days) return [NSString stringWithFormat:@"%@ · %ld天%ld小时后到期", dateText, (long)days, (long)hours];
+    return [NSString stringWithFormat:@"%@ · %ld小时后到期", dateText, (long)MAX(1, hours)];
+}
+
+- (NSDate *)dateForCredit:(NSDictionary *)credit {
+    NSString *rawDate = [credit[@"expires_at"] isKindOfClass:NSString.class] ? credit[@"expires_at"] : nil;
+    return rawDate ? [[NSISO8601DateFormatter new] dateFromString:rawDate] : nil;
 }
 @end
 
@@ -130,6 +153,7 @@
 @property NSTimer *refreshTimer;
 @property NSTimer *displayTimer;
 @property NSDictionary *usage;
+@property NSArray<NSDictionary *> *resetCreditDetails;
 @property NSString *lastError;
 @property BOOL refreshing;
 @end
@@ -188,7 +212,38 @@
                 self.lastError = nil;
                 self.usage = [self.usage mutableCopy];
                 [(NSMutableDictionary *)self.usage setObject:[NSDate date] forKey:@"_fetchedAt"];
+                [self fetchResetCreditDetailsWithToken:token accountID:tokens[@"account_id"]];
             }
+            [self updateDisplay];
+        });
+    }] resume];
+}
+
+- (void)fetchResetCreditDetailsWithToken:(NSString *)token accountID:(NSString *)accountID {
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:@"https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"]];
+    [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
+    if ([accountID isKindOfClass:NSString.class]) [request setValue:accountID forHTTPHeaderField:@"ChatGPT-Account-Id"];
+    [request setValue:@"Codex Desktop" forHTTPHeaderField:@"Originator"];
+    request.timeoutInterval = 20;
+
+    __weak typeof(self) weakSelf = self;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = [response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)response : nil;
+        NSError *jsonError = nil;
+        NSDictionary *result = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError] : nil;
+        NSArray *credits = [result[@"credits"] isKindOfClass:NSArray.class] ? result[@"credits"] : nil;
+        if (error || http.statusCode != 200 || !credits) return;
+        NSPredicate *available = [NSPredicate predicateWithBlock:^BOOL(NSDictionary *credit, NSDictionary *bindings) {
+            return [credit[@"status"] isEqualToString:@"available"];
+        }];
+        NSArray *filtered = [credits filteredArrayUsingPredicate:available];
+        NSArray *sorted = [filtered sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+            return [left[@"expires_at"] compare:right[@"expires_at"]];
+        }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            AppDelegate *self = weakSelf;
+            if (!self) return;
+            self.resetCreditDetails = sorted;
             [self updateDisplay];
         });
     }] resume];
@@ -267,15 +322,6 @@
     return rows;
 }
 
-- (NSDate *)resetCreditsExpiry {
-    NSDictionary *credits = [self.usage[@"rate_limit_reset_credits"] isKindOfClass:NSDictionary.class] ? self.usage[@"rate_limit_reset_credits"] : nil;
-    for (NSString *key in @[@"expires_at", @"expiration_at", @"expiresAt", @"expirationAt"]) {
-        NSNumber *timestamp = [credits[key] respondsToSelector:@selector(doubleValue)] ? credits[key] : nil;
-        if (timestamp.doubleValue > 0) return [NSDate dateWithTimeIntervalSince1970:timestamp.doubleValue];
-    }
-    return nil;
-}
-
 - (void)rebuildMenu {
     NSMenu *menu = [NSMenu new];
     [self addDisabled:@"Codex 用量余额" to:menu];
@@ -285,7 +331,7 @@
     if (mainWindows.count) {
         NSDictionary *resetCreditInfo = [self.usage[@"rate_limit_reset_credits"] isKindOfClass:NSDictionary.class] ? self.usage[@"rate_limit_reset_credits"] : nil;
         NSNumber *resetCredits = [resetCreditInfo[@"available_count"] respondsToSelector:@selector(integerValue)] ? resetCreditInfo[@"available_count"] : nil;
-        UsageDashboardView *dashboard = [[UsageDashboardView alloc] initWithRows:[self dashboardRows] updatedAt:self.usage[@"_fetchedAt"] resetCredits:resetCredits resetCreditsExpiry:[self resetCreditsExpiry]];
+        UsageDashboardView *dashboard = [[UsageDashboardView alloc] initWithRows:[self dashboardRows] updatedAt:self.usage[@"_fetchedAt"] resetCredits:resetCredits resetCreditDetails:self.resetCreditDetails];
         NSMenuItem *dashboardItem = [NSMenuItem new];
         dashboardItem.view = dashboard;
         [menu addItem:dashboardItem];
