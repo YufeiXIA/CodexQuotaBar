@@ -1,5 +1,7 @@
 # CodexQuotaBar
 
+> English | [简体中文](README.zh-CN.md)
+
 A native macOS menu-bar dashboard for the usage limits of the Codex account
 signed in on the current Mac. It displays the remaining percentage, an adaptive
 bar chart, the reset countdown, plan, extra credits, reset-card count, and any
